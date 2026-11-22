@@ -1,0 +1,43 @@
+name: Prepare deploy key
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: Create deploy key on server
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" 'bash -s' <<'REMOTE'
+          set -e
+          echo "===== HOST INFO ====="
+          node --version 2>/dev/null || echo "no host node"
+          npm --version 2>/dev/null || echo "no host npm"
+          free -m
+          swapon --show 2>/dev/null || true
+          df -h / | tail -1
+          echo "===== DEPLOY KEY ====="
+          if [ ! -f /root/.ssh/kashefi_deploy ]; then
+            ssh-keygen -t ed25519 -N "" -C "deploy@kashefi-portfolio" -f /root/.ssh/kashefi_deploy >/dev/null
+            chmod 600 /root/.ssh/kashefi_deploy
+          fi
+          cat /root/.ssh/kashefi_deploy.pub
+          echo "===== DONE ====="
+          REMOTE
