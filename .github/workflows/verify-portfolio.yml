@@ -1,0 +1,43 @@
+name: Verify portfolio
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: Verify deployment
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== CONTAINER ====="
+          docker ps --filter name=kashefi-portfolio --format '{{.Names}} | {{.Status}} | {{.Ports}}'
+          echo "===== HOST ROUTING ====="
+          curl -s -o /dev/null -w 'kashefi apex: %{http_code} -> %{redirect_url}\n' -H 'Host: kashefimajiddev.com' http://127.0.0.1/
+          curl -s -o /dev/null -w 'kashefi www: %{http_code} -> %{redirect_url}\n' -H 'Host: www.kashefimajiddev.com' http://127.0.0.1/
+          curl -s -o /dev/null -w 'electrical: %{http_code} -> %{redirect_url}\n' -H 'Host: electrical-calculator.ir' http://127.0.0.1/
+          echo "===== TLS CERT STATE ====="
+          ls -la /var/lib/docker/volumes/edge_caddy_data/_data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/ 2>/dev/null
+          echo "===== CADDY LOG (kashefi) ====="
+          docker logs edge-caddy --since 15m 2>&1 | grep -i 'kashefimajiddev' | tail -30
+          echo "===== DNS ON SERVER ====="
+          getent hosts kashefimajiddev.com || echo "does not resolve"
+          echo "===== DONE ====="
+          REMOTE
