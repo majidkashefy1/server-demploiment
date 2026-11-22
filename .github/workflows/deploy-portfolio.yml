@@ -1,0 +1,114 @@
+name: Deploy portfolio
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: Deploy on server
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+
+          APP_DIR=/opt/projects/kashefi-portfolio
+          EDGE_DIR=/opt/projects/edge
+          PORT=3004
+
+          echo "===== GIT CHECKOUT ====="
+          mkdir -p /root/.ssh
+          grep -q '^github.com ' /root/.ssh/known_hosts 2>/dev/null || ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i /root/.ssh/kashefi_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          if [ -d "$APP_DIR/.git" ]; then
+            cd "$APP_DIR"
+            git fetch --depth 1 origin main
+            git reset --hard origin/main
+          else
+            git clone --depth 1 git@github.com:majidkashefy1/kashefi-portfolio.git "$APP_DIR"
+            cd "$APP_DIR"
+          fi
+          git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+          git log -1 --oneline
+
+          echo "===== ENV ====="
+          cat > "$APP_DIR/.env.production" <<'ENV'
+          NEXT_PUBLIC_SITE_URL=https://kashefimajiddev.com
+          ENV
+
+          echo "===== BUILD ====="
+          docker build -t kashefi-portfolio:latest "$APP_DIR"
+
+          echo "===== RUN ====="
+          docker rm -f kashefi-portfolio >/dev/null 2>&1 || true
+          docker run -d \
+            --name kashefi-portfolio \
+            --restart unless-stopped \
+            -p 127.0.0.1:${PORT}:3000 \
+            --env-file "$APP_DIR/.env.production" \
+            kashefi-portfolio:latest
+
+          echo "===== HEALTH ====="
+          ok=0
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/" || true)
+            if [ "$code" = "200" ]; then ok=1; echo "attempt $i: HTTP $code"; break; fi
+            echo "attempt $i: HTTP $code"
+            sleep 2
+          done
+          curl -s -o /dev/null -w 'home: %{http_code}\n' "http://127.0.0.1:${PORT}/" || true
+          curl -s -o /dev/null -w 'blog: %{http_code}\n' "http://127.0.0.1:${PORT}/blog" || true
+          curl -s -o /dev/null -w 'article: %{http_code}\n' "http://127.0.0.1:${PORT}/blog/solid-principles" || true
+          curl -s -o /dev/null -w 'sitemap: %{http_code}\n' "http://127.0.0.1:${PORT}/sitemap.xml" || true
+          curl -s -o /dev/null -w 'robots: %{http_code}\n' "http://127.0.0.1:${PORT}/robots.txt" || true
+          curl -s -o /dev/null -w 'api-contact: %{http_code}\n' -X POST -H 'Content-Type: application/json' -d '{}' "http://127.0.0.1:${PORT}/api/contact" || true
+          if [ "$ok" != "1" ]; then
+            echo "app did not become healthy"
+            docker logs --tail 60 kashefi-portfolio
+            exit 1
+          fi
+          docker logs --tail 20 kashefi-portfolio
+
+          echo "===== CADDY FRAGMENT ====="
+          mkdir -p "$EDGE_DIR/conf.d"
+          cat > "$EDGE_DIR/conf.d/60-kashefi-portfolio.caddy" <<'CADDY'
+          # kashefimajiddev.com — portfolio (Next.js container on 127.0.0.1:3004).
+          kashefimajiddev.com {
+          	encode zstd gzip
+          	reverse_proxy 127.0.0.1:3004
+          }
+
+          www.kashefimajiddev.com {
+          	redir https://kashefimajiddev.com{uri} permanent
+          }
+          CADDY
+          cat "$EDGE_DIR/conf.d/60-kashefi-portfolio.caddy"
+
+          echo "===== CADDY VALIDATE ====="
+          docker exec edge-caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+          echo "===== CADDY RELOAD ====="
+          docker exec edge-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+
+          echo "===== EDGE CHECK ====="
+          docker ps --filter name=edge-caddy --format '{{.Names}} {{.Status}}'
+          curl -s -o /dev/null -w 'existing-site: %{http_code}\n' -H 'Host: electrical-calculator.ir' http://127.0.0.1/ || true
+
+          echo "===== DONE ====="
+          REMOTE

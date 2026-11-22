@@ -1,0 +1,44 @@
+name: Connectivity check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: Check outbound connectivity and mounts
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== GITHUB SSH 22 ====="
+          timeout 8 bash -c 'cat < /dev/null > /dev/tcp/github.com/22' && echo "port 22 open" || echo "port 22 blocked"
+          echo "===== GITHUB SSH 443 ====="
+          timeout 8 bash -c 'cat < /dev/null > /dev/tcp/ssh.github.com/443' && echo "port 443 open" || echo "port 443 blocked"
+          echo "===== GITHUB HTTPS ====="
+          curl -s -o /dev/null -w 'github.com: %{http_code}\n' --max-time 15 https://github.com
+          echo "===== NPM REGISTRY ====="
+          curl -s -o /dev/null -w 'registry.npmjs.org: %{http_code}\n' --max-time 20 https://registry.npmjs.org/next
+          curl -s -o /dev/null -w 'registry.npmmirror.com: %{http_code}\n' --max-time 20 https://registry.npmmirror.com/next
+          echo "===== EDGE MOUNTS ====="
+          docker inspect edge-caddy --format '{{json .Mounts}}'
+          echo "===== EDGE FRAGMENT VISIBLE ====="
+          docker exec edge-caddy sh -c 'ls -la /etc/caddy/conf.d 2>/dev/null | head -20'
+          echo "===== DONE ====="
+          REMOTE
