@@ -1,0 +1,58 @@
+name: Inspect Caddy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: Inspect Docker and Caddy
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== CADDY CONTAINER ====="
+          docker inspect edge-caddy --format 'image={{.Config.Image}}'
+          docker inspect edge-caddy --format 'cmd={{json .Config.Cmd}}'
+          docker inspect edge-caddy --format 'entrypoint={{json .Config.Entrypoint}}'
+          docker inspect edge-caddy --format 'networks={{json .NetworkSettings.Networks}}'
+          docker inspect edge-caddy --format 'ports={{json .HostConfig.PortBindings}}'
+          docker inspect edge-caddy --format 'mounts={{json .Mounts}}'
+          echo "===== CADDY NETWORKS ====="
+          docker network ls
+          echo "===== CADDYFILE ====="
+          docker exec edge-caddy sh -c "ls -la /etc/caddy /data /config 2>/dev/null"
+          echo "--- redacted ---"
+          docker exec edge-caddy sh -c "grep -viE 'token|secret|password|basicauth|api[_-]?key|email|authorization' /etc/caddy/Caddyfile 2>/dev/null"
+          echo "===== CADDY CONFIG ADAPT ====="
+          docker exec edge-caddy sh -c "caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null | head -c 4000"
+          echo
+          echo "===== COMPOSE REFERENCES ====="
+          grep -rl 'edge-caddy' /opt/projects /root --include='*.yml' --include='*.yaml' 2>/dev/null
+          echo "===== PROJECT DIRS ====="
+          ls -la /opt/projects
+          for d in /opt/projects/*; do
+            if [ -d "$d" ]; then echo "== $d =="; ls -la "$d" | head -15; fi
+          done
+          echo "===== DOCKER IMAGES ====="
+          docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.Size}}' | head -40
+          echo "===== FREE PORTS ====="
+          ss -tlnp | grep -E ':3004|:3005|:3006' || echo "3004-3006 free"
+          echo "===== DONE ====="
+          REMOTE
