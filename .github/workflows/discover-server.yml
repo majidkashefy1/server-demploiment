@@ -1,0 +1,76 @@
+name: Discover server
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: Collect server information
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo "===== IDENTITY ====="
+          hostname
+          whoami
+          id
+          cat /etc/os-release
+          uname -a
+          echo "===== NODE ====="
+          for c in node npm pnpm yarn bun pm2; do
+            if command -v "$c" >/dev/null 2>&1; then echo "$c: $("$c" --version 2>&1)"; fi
+          done
+          echo "===== DOCKER ====="
+          if command -v docker >/dev/null 2>&1; then
+            docker --version
+            docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'
+            docker compose version 2>/dev/null
+          fi
+          echo "===== CADDY ====="
+          if command -v caddy >/dev/null 2>&1; then caddy version; fi
+          systemctl is-active caddy 2>/dev/null
+          ls -la /etc/caddy 2>/dev/null
+          echo "--- Caddyfile (sensitive lines removed) ---"
+          grep -viE 'token|secret|password|basicauth|api[_-]?key|email' /etc/caddy/Caddyfile 2>/dev/null
+          echo "--- caddy files ---"
+          find /etc/caddy -maxdepth 2 -type f 2>/dev/null
+          echo "===== WEB SERVICES ====="
+          systemctl is-active nginx apache2 2>/dev/null
+          echo "===== LISTENERS ====="
+          ss -tlnp
+          echo "===== DIRS ====="
+          ls -la /var/www /opt /srv /root 2>/dev/null
+          echo "===== DISK/MEM ====="
+          df -h
+          free -m
+          echo "===== FIREWALL ====="
+          ufw status 2>/dev/null
+          firewall-cmd --state 2>/dev/null
+          iptables -S 2>/dev/null | head -80
+          echo "===== SERVICES ====="
+          systemctl list-units --type=service --state=running --no-pager | head -80
+          echo "===== PROCESSES ====="
+          ps aux | grep -E 'caddy|next|node|pm2' | grep -v grep
+          echo "===== COMPOSE ====="
+          find /root /opt /srv /var/www -maxdepth 4 \( -name 'docker-compose*.yml' -o -name 'compose*.yml' \) 2>/dev/null | head -30
+          echo "===== GIT ====="
+          git --version
+          echo "===== DONE ====="
+          REMOTE
