@@ -1,0 +1,48 @@
+name: Ops status and cleanup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: Status and cleanup
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set +e
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          SSHCMD="sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25"
+          $SSHCMD "$SSH_USER@$SSH_HOST" '
+            echo "===== SYSTEM ====="
+            uptime
+            free -h
+            df -h / | tail -1
+            echo "===== CONTAINERS ====="
+            docker ps --format "{{.Names}} :: {{.Status}} :: {{.Ports}}"
+            echo "===== APP LOG (last 20) ====="
+            docker logs kashefi-portfolio --tail 20 2>&1
+            echo "===== APP STATS ====="
+            docker stats --no-stream --format "{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}}" kashefi-portfolio
+            echo "===== CADDY FRAGMENT ====="
+            cat /opt/projects/edge/conf.d/60-kashefi-portfolio.caddy
+            echo "===== SSH KEYS ====="
+            ssh-keygen -lf /root/.ssh/authorized_keys
+            echo "===== REMOVE OLD DEPLOY KEY ====="
+            rm -f /root/.ssh/kashefi_deploy /root/.ssh/kashefi_deploy.pub
+            ls -la /root/.ssh/
+            echo "===== DONE ====="
+          '
