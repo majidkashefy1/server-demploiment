@@ -1,0 +1,44 @@
+name: Verify live
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: Verify from outside
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set +e
+          echo "===== DNS ====="
+          getent hosts kashefimajiddev.com
+          getent hosts www.kashefimajiddev.com
+          echo "===== HTTPS ====="
+          curl -sS -o /dev/null -w 'apex: %{http_code} ssl_verify=%{ssl_verify_result}\n' --max-time 30 https://kashefimajiddev.com/
+          curl -sS -o /dev/null -w 'www: %{http_code} -> %{redirect_url}\n' --max-time 30 https://www.kashefimajiddev.com/
+          curl -sS -o /dev/null -w 'blog: %{http_code}\n' --max-time 30 https://kashefimajiddev.com/blog
+          curl -sS -o /dev/null -w 'article: %{http_code}\n' --max-time 30 https://kashefimajiddev.com/blog/solid-principles
+          curl -sS -o /dev/null -w 'sitemap: %{http_code}\n' --max-time 30 https://kashefimajiddev.com/sitemap.xml
+          curl -sS -o /dev/null -w 'robots: %{http_code}\n' --max-time 30 https://kashefimajiddev.com/robots.txt
+          echo "===== CERT ====="
+          echo | openssl s_client -connect kashefimajiddev.com:443 -servername kashefimajiddev.com 2>/dev/null | openssl x509 -noout -subject -issuer -dates
+          echo "===== EXISTING SITE ====="
+          curl -sS -o /dev/null -w 'electrical: %{http_code}\n' --max-time 30 https://electrical-calculator.ir/
+          echo "===== CADDY LOG ====="
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" "docker logs edge-caddy --since 45m 2>&1 | grep -i kashefimajiddev | tail -40"
+          echo "===== DONE ====="
