@@ -9,7 +9,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - name: Install sshpass
         run: |
@@ -21,31 +21,29 @@ jobs:
           SSHPASS: ${{ secrets.SSH_PASSWORD }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" 'bash -s' <<'REMOTE'
+          sshpass -e ssh -o StrictHostKeyChecking=yes -o ConnectTimeout=25 "$SSH_USER@$SSH_HOST" "REPO_TOKEN='$REPO_TOKEN' bash -s" <<'REMOTE'
           set -euo pipefail
 
           APP_DIR=/opt/projects/kashefi-portfolio
           EDGE_DIR=/opt/projects/edge
           PORT=3004
 
-          echo "===== GIT CHECKOUT ====="
-          mkdir -p /root/.ssh
-          grep -q '^github.com ' /root/.ssh/known_hosts 2>/dev/null || ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
-          export GIT_SSH_COMMAND="ssh -i /root/.ssh/kashefi_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
-          if [ -d "$APP_DIR/.git" ]; then
-            cd "$APP_DIR"
-            git fetch --depth 1 origin main
-            git reset --hard origin/main
-          else
-            git clone --depth 1 git@github.com:majidkashefy1/kashefi-portfolio.git "$APP_DIR"
-            cd "$APP_DIR"
-          fi
-          git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
-          git log -1 --oneline
+          echo "===== FETCH SOURCE ====="
+          rm -rf "$APP_DIR"
+          mkdir -p "$APP_DIR"
+          curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 900 \
+            -H "Authorization: Bearer $REPO_TOKEN" \
+            "https://codeload.github.com/majidkashefy1/kashefi-portfolio/tar.gz/refs/heads/main" \
+            -o /tmp/portfolio.tar.gz
+          ls -lh /tmp/portfolio.tar.gz
+          tar -xzf /tmp/portfolio.tar.gz -C "$APP_DIR" --strip-components=1
+          rm -f /tmp/portfolio.tar.gz
+          ls -la "$APP_DIR" | head -25
 
           echo "===== ENV ====="
           cat > "$APP_DIR/.env.production" <<'ENV'
@@ -66,7 +64,7 @@ jobs:
 
           echo "===== HEALTH ====="
           ok=0
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/" || true)
             if [ "$code" = "200" ]; then ok=1; echo "attempt $i: HTTP $code"; break; fi
             echo "attempt $i: HTTP $code"
